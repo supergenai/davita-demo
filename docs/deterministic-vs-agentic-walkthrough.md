@@ -75,3 +75,65 @@ looked up) is an architecture decision that needs its own review — see
    RLM + LightRAG components for the unstructured path.
 5. Everything above is testable and demoable before any real BigQuery or
    Vertex AI credentials exist.
+
+## Evidence: what actually happened when we tested the alternative
+
+The team proposed an alternative to the above: let an ADK agent reason
+through the whole tree from a `skills.md`-style description instead of
+walking a compiled graph. Rather than settle that by argument, we built a
+POC that runs both approaches against the same synthetic cases, scored on
+accuracy, fabricated evidence, guessing under uncertainty, and
+reproducibility — then ran it twice, once against the culture/renal/allergy
+tree above, and once against a real published ciprofloxacin renal-dosing
+flowchart.
+
+**What held up:** the full-reasoning approach never fabricated an evidence
+value and never gave a confident answer on a case that should have deferred
+to review, across every run. That's genuine evidence *for* using an LLM as
+an extraction step — not for anything wider.
+
+**What failed, concretely, on the second tree:**
+
+- **4 of 4 test cases with `eGFR` pinned exactly at the boundary value 10**
+  were misrouted — the reasoning approach treated "below 10" as "10 or
+  below," a consistent, repeatable misapplication of a plainly stated
+  threshold, not noise. A tree executor evaluating `{op: lt, value: 10}`
+  cannot make this mistake; it was the actual finding that decided this.
+- **One case (a CAPD patient) applied the wrong branch of the tree
+  entirely** — instead of following the RRT-modality rule that should have
+  taken precedence, it fell into the generic eGFR-bucket rule from a
+  different part of the tree. A graph walk evaluates nodes in a fixed
+  order and cannot skip to the wrong branch; this failure mode does not
+  exist in the deterministic executor by construction.
+- Neither error involved a fabricated fact. The evidence given was
+  unambiguous and the rule was stated in plain language — the model still
+  got it wrong. That is a harder class of error to catch than a
+  hallucination, because there is no invented value to flag; the output
+  looks exactly as confident as a correct one.
+
+**Full pass/fail result, both trees:** the deterministic approach passed
+clean on both (100% accuracy, zero fabrication, zero guessing, every
+boundary case exact — expected, since it's compiled code implementing the
+stated rule). The full-reasoning approach failed the verdict on the cipro
+tree specifically on the boundary-correctness criterion, despite clean
+scores on the other two.
+
+**An unplanned second finding, from trying to run this outside Claude's own
+runtime:** getting reliable output from a different LLM provider surfaced
+three separate silent-failure modes with no error thrown — a
+thinking-mode model burning its entire token budget on invisible reasoning
+before writing anything visible, a config parameter that was silently
+ignored because we had the wrong field name, and a request that simply
+timed out past an assumed limit. None of these produced an error status;
+each one looked like a normal 200 response until inspected. This reinforces
+the same conclusion from a different angle: branch-critical logic cannot
+live inside a model call, because the call itself can silently produce
+nothing — or the wrong thing — without any signal that it happened.
+
+**Net conclusion:** nothing in this testing weakens the boundary this file
+describes. The graph decides; the model only reads, one bounded fact at a
+time, and every value it returns still goes through the same validator as
+everything else. Widening that scope — letting reasoning walk the tree, as
+proposed — reintroduces exactly the two failure modes (threshold
+misapplication, branch confusion) that a compiled graph structurally
+prevents.
